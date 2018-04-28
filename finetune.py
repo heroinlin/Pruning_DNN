@@ -16,10 +16,11 @@ from operator import itemgetter
 from heapq import nsmallest
 import time
 
-class ModifiedVGG16Model(torch.nn.Module):
-    def __init__(self):
-        super(ModifiedVGG16Model, self).__init__()
-
+class CNetwork(torch.nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNetwork, self).__init__()
+        self._num_classes = num_classes
+        self._fc_num = 512
         model = models.vgg16(pretrained=True)
         self.features = model.features
 
@@ -28,12 +29,12 @@ class ModifiedVGG16Model(torch.nn.Module):
 
         self.classifier = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(512, 4096),
+            nn.Linear(self._fc_num, 4096),
             nn.ReLU(inplace=True),
             nn.Dropout(),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
-            nn.Linear(4096, 10))
+            nn.Linear(4096, self._num_classes))
 
     def forward(self, x):
         x = self.features(x)
@@ -175,14 +176,22 @@ class PrunningFineTuner_VGG16:
 
         if rank_filters:
             output = self.prunner.forward(input)
-            self.criterion(output, Variable(label)).backward()
+            self.loss = self.criterion(output, Variable(label))
+            self.loss.backward()
         else:
-            self.criterion(self.model(input), Variable(label)).backward()
+            self.loss = self.criterion(self.model(input), Variable(label))
+            self.loss.backward()
             optimizer.step()
 
     def train_epoch(self, optimizer=None, rank_filters=False):
-        for batch, label in self.train_data_loader:
+        for step, (batch, label) in enumerate(self.train_data_loader):
+            start = time.time()
             self.train_batch(optimizer, batch.cuda(), label.cuda(), rank_filters)
+            end = time.time()
+            if step % 100 == 0:
+                print('({:<.02%}), step: {}, duration: {:>.2f},  loss: {}'.format(
+                    step % self.train_data_loader.__len__() / self.train_data_loader.__len__(), step, end - start,
+                    self.loss.data.cpu().numpy()))
 
     def get_candidates_to_prune(self, num_filters_to_prune):
         self.prunner.reset()
@@ -259,7 +268,7 @@ def get_args():
 if __name__ == '__main__':
     args = get_args()
     if args.train:
-        model = ModifiedVGG16Model().cuda()
+        model = CNetwork().cuda()
     elif args.prune:
         model = torch.load("model").cuda()
 
